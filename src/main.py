@@ -3,123 +3,149 @@
 from data_loader import DataLoader
 from correlation import Correlation
 from cointegration import Cointegration
-from pairs_trading import PairsTrading
+from spread_model import SpreadModel, half_life
+from backtester import Backtester
+from performance import Performance
+from logger import log_trade
+from data_streamer import DataStreamer
+
+import pandas as pd
+import time
+
+
+def run_backtest(tickers, start_date, end_date, corr_threshold):
+
+    print("\nRunning BACKTEST mode...\n")
+
+    loader = DataLoader(tickers, start_date, end_date)
+    data = loader.fetch_data()
+
+    corr_matrix = Correlation.compute_matrix(data)
+    pairs = Correlation.find_pairs(corr_matrix, threshold=corr_threshold)
+
+    if not pairs:
+        print("No correlated pairs found.")
+        return
+
+    equity_curves = []
+
+    for s1, s2, corr in pairs:
+
+        print(f"\nProcessing Pair: {s1} - {s2}")
+
+        pvalue = Cointegration.test_pair(data[s1], data[s2])
+
+        if pvalue >= 0.05:
+            continue
+
+        # =========================
+        # SPREAD MODEL
+        # =========================
+        model = SpreadModel(data[s1], data[s2])
+        spread, _ = model.compute_spread()
+
+        hl = half_life(spread)
+        model = SpreadModel(data[s1], data[s2], window=hl)
+
+        spread, _ = model.compute_spread()
+        zscore = model.compute_zscore(spread)
+        signals = model.generate_signals(zscore)
+
+        # SAVE FOR DASHBOARD
+        zscore.to_csv("zscore.csv")
+        signals.to_csv("signals.csv")
+
+        # =========================
+        # BACKTEST
+        # =========================
+        backtester = Backtester(spread, signals)
+        equity_curve = backtester.run()
+
+        equity_curves.append(equity_curve)
+
+        log_trade(f"[BACKTEST] {s1}-{s2} Signal: {signals.iloc[-1]}")
+
+    if not equity_curves:
+        print("No valid strategies.")
+        return
+
+    portfolio = pd.concat(equity_curves, axis=1).mean(axis=1)
+
+    # SAVE FOR DASHBOARD
+    portfolio.to_csv("equity.csv")
+
+    metrics = Performance.compute_all(portfolio)
+
+    print("\n===== PERFORMANCE =====\n")
+    for k, v in metrics.items():
+        print(f"{k}: {v:.4f}")
+
+
+def run_live(tickers):
+
+    print("\nRunning LIVE STREAMING mode...\n")
+
+    streamer = DataStreamer(tickers)
+    history = pd.DataFrame()
+
+    while True:
+
+        latest_prices = streamer.fetch_latest()
+
+        history = pd.concat([history, latest_prices.to_frame().T])
+
+        # wait until enough data
+        if len(history) < 10:
+            print("Collecting data...")
+            time.sleep(10)
+            continue
+
+        s1, s2 = history.columns[:2]
+
+        model = SpreadModel(history[s1], history[s2])
+
+        spread, _ = model.compute_spread()
+        zscore = model.compute_zscore(spread)
+        signals = model.generate_signals(zscore)
+
+        # SAVE FOR DASHBOARD (LIVE UPDATE)
+        spread.to_csv("spread.csv")
+        zscore.to_csv("zscore.csv")
+        signals.to_csv("signals.csv")
+
+        latest_signal = signals.iloc[-1]
+
+        log_trade(f"[LIVE] {s1}-{s2} Signal: {latest_signal}")
+
+        print(f"{s1}-{s2} Signal: {latest_signal}")
+
+        time.sleep(60)  # 1-min frequency
 
 
 def main():
 
     print("\n===== Statistical Arbitrage Trading System =====\n")
 
-    # USER INPUTS
-    tickers_input = input("Enter tickers separated by comma (example: AAPL,MSFT,GOOG,AMZN): ")
+    mode = input("Select mode (1 = Backtest, 2 = Live): ")
+
+    tickers_input = input("Enter tickers (AAPL,MSFT,...): ")
     tickers = [t.strip().upper() for t in tickers_input.split(",")]
 
-    start_date = input("Enter start date (YYYY-MM-DD): ")
-    end_date = input("Enter end date (YYYY-MM-DD): ")
+    if mode == "1":
 
-    corr_threshold = float(input("Enter correlation threshold (example 0.8): "))
+        start_date = input("Start date (YYYY-MM-DD): ")
+        end_date = input("End date (YYYY-MM-DD): ")
+        corr_threshold = float(input("Correlation threshold (0.8): "))
 
-    print("\nFetching market data...\n")
+        run_backtest(tickers, start_date, end_date, corr_threshold)
 
-    # LOAD DATA
-    loader = DataLoader(
-        tickers,
-        start_date,
-        end_date
-    )
+    elif mode == "2":
 
-    data = loader.fetch_data()
+        run_live(tickers)
 
-    print("Data Loaded Successfully\n")
-
-    # CORRELATION MATRIX
-    corr_matrix = Correlation.compute_matrix(data)
-
-    print("Correlation Matrix:\n")
-    print(corr_matrix)
-    print()
-
-    # FIND PAIRS
-    pairs = Correlation.find_pairs(
-        corr_matrix,
-        threshold=corr_threshold
-    )
-
-    if len(pairs) == 0:
-        print("No highly correlated pairs found.")
-        return
-
-    print("Candidate Pairs Found:\n")
-
-    for p in pairs:
-        print(p)
-
-    print()
-
-    # COINTEGRATION TEST
-    print("Testing Cointegration...\n")
-
-    for s1, s2, corr in pairs:
-
-        pvalue = Cointegration.test_pair(
-            data[s1],
-            data[s2]
-        )
-
-        if pvalue < 0.05:
-
-            print(f"Cointegrated Pair Found: {s1} & {s2} (p-value={pvalue})")
-
-            strategy = PairsTrading(data, s1, s2)
-
-            signals = strategy.generate_signals()
-
-            print("\nLatest Signals:\n")
-            print(signals.tail())
-
-        else:
-
-            print(f"{s1} & {s2} NOT cointegrated (p-value={pvalue})")
+    else:
+        print("Invalid mode selected.")
 
 
 if __name__ == "__main__":
     main()
-
-
-# from data_loader import DataLoader
-# from correlation import Correlation
-# from cointegration import Cointegration
-# from pairs_trading import PairsTrading
-
-# tickers = ["AAPL","MSFT","GOOG","AMZN"]
-
-# loader = DataLoader(
-#     tickers,
-#     "2020-01-01",
-#     "2024-01-01"
-# )
-
-# data = loader.fetch_data()
-
-# corr = Correlation.compute_matrix(data)
-
-# pairs = Correlation.find_pairs(corr)
-
-# print("Candidate Pairs:", pairs)
-
-# for s1, s2, c in pairs:
-
-#     pvalue = Cointegration.test_pair(
-#         data[s1],
-#         data[s2]
-#     )
-
-#     if pvalue < 0.05:
-
-#         print("Cointegrated:", s1, s2)
-
-#         strategy = PairsTrading(data, s1, s2)
-
-#         signals = strategy.generate_signals()
-
-#         print(signals.tail())

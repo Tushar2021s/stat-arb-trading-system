@@ -34,19 +34,4 @@ class PairsTrading:
         return signals
 
 
-    # def generate_signals(self):
-
-    #     spread = self.compute_spread()
-
-    #     mean = spread.mean()
-    #     std = spread.std()
-
-    #     zscore = (spread - mean) / std
-
-    #     signals = pd.DataFrame(index=spread.index)
-
-    #     signals["zscore"] = zscore
-    #     signals["long"] = zscore < -1
-    #     signals["short"] = zscore > 1
-
-    #     return signals
+   
